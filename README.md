@@ -56,6 +56,8 @@ Hardware transcoding to x264 is currently supported on Intel and AMD Graphics us
 
 ## macOS (native, Apple Silicon / Mac mini)
 
+[中文部署与验证说明](docs/MACOS.zh-CN.md)
+
 This fork preserves the upstream Photos API flow, image and video thumbnails,
 multiple accounts, interactive OTP/device ID, Docker cron, `SINGLE_RUN`, software
 encoding and VAAPI. Native macOS automatically uses VideoToolbox for H.264
