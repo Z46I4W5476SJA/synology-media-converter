@@ -102,3 +102,12 @@ launchctl bootout gui/$(id -u) ~/Library/LaunchAgents/local.synology-media-conve
 原生 launchd 设置 EXIT_ON_FAIL=true，避免本程序将新的转换失败永久标记为 broken。
 
 后台进程可能还需要在 macOS「隐私与安全性 → 本地网络」中允许 Node 访问 NAS。SSH 中运行成功不能替代 launchd 环境验证；以定时任务日志和 last exit code 为准。
+
+## launchd 实机验证
+
+2026-09-15，服务迁入 `~/Library/Application Support/SynologyMediaConverter`。
+首次后台访问 NAS 返回 EHOSTUNREACH；用户在 macOS 本地网络设置中允许 Node 后，
+同一 launchd 任务成功登录、查询空队列并以 exit=0 结束。运行间隔为 3600 秒。
+
+macOS 权限由用户在系统设置中授予，没有修改系统权限数据库。
+升级 Homebrew Node 后，如原来生成的 Node 绝对路径不再存在，需重新生成并加载 plist。
