@@ -2,9 +2,14 @@ const fs = require('fs');
 const readline = require('readline');
 const { Readable } = require('stream');
 const { finished } = require('stream/promises');
-const childProcess = require('child_process');
+const path = require('node:path');
+const { processVideo, processImage, executeCommand } = require('./lib/media');
+const { selectBackend } = require('./lib/video');
 const axios = require('axios');
-const config = require('./config.json');
+const configPath = path.resolve(process.env.CONFIG_PATH || path.join(__dirname, 'config.json'));
+const config = JSON.parse(fs.readFileSync(configPath, 'utf8'));
+const tempRoot = path.resolve(process.env.TEMP_DIR || path.join(__dirname, 'tmp'));
+const log = (...args) => console.log(new Date().toISOString(), ...args);
 
 async function login(account) {
     const session = { url: account.url };
@@ -76,9 +81,10 @@ async function downloadFile(session, unitId, savePath) {
             'Cookie': `did=${session.did}; id=${session.sid}`
         }
     });
-    if(res.headers.get("content-type").includes('json')) {
+    if(!res.ok) throw new Error(`Download failed: HTTP ${res.status}`);
+    if((res.headers.get('content-type') || '').includes('json')) {
         res = await res.json();
-        if(!res.success) throw new Error(`Download of file ${unitId} failed with error `+JSON.stringify(res.error));
+        throw new Error(`Download of file ${unitId} returned JSON instead of media`);
     } else {
         const fileStream = fs.createWriteStream(savePath, { flags: 'w' });
         await finished(Readable.fromWeb(res.body).pipe(fileStream));
@@ -150,84 +156,6 @@ async function setBroken(session, unitId) {
     if(!res.success) throw new Error(`Marking file ${unitId} as broken failed with error `+JSON.stringify(res.error));
 }
 
-function executeCommand(cmd, args) {
-    return new Promise((resolve, reject) => {
-        const proc = childProcess.spawn(cmd, args);
-        //console.log(cmd, args.join(' '));
-
-        let buffer = '', errbuffer = '';
-        proc.stdout.on('data', data => buffer += data);
-        proc.stderr.on('data', data => errbuffer += data);
-
-        proc.on('close', code => {
-            if(code != 0) {
-                reject(new Error(errbuffer.trim()));
-                return;
-            }
-            resolve(buffer);
-        });
-        proc.on('error', err => reject(new Error(err)));
-    });
-}
-
-async function processVideo(srcPath, needThumbnails, needVideo) {
-    // Sizes (fit short edge): SM 240    M 320    XL 1280    H264 720
-    let dimensions = await executeCommand('ffprobe', ['-v', 'error', '-select_streams', 'v:0', '-show_entries', 'stream=width,height:stream_side_data=rotation', '-of', 'flat', srcPath]);
-    dimensions = {
-        width: dimensions.match(/width=(.+)/)[1],
-        height: dimensions.match(/height=(.+)/)[1],
-        rotation: dimensions.match(/rotation=(.+)/)?.[1],
-    };
-    if(dimensions.rotation == '90' || dimensions.rotation == '-90') {
-        [dimensions.width, dimensions.height] = [dimensions.height, dimensions.width];
-        delete dimensions.rotation;
-    }
-    const landscape = dimensions.width > dimensions.height;
-
-    let thumbs = {};
-    if(needVideo) thumbs['film_h264'] = 720;
-    if(needThumbnails) {
-        thumbs['thumb_sm'] = 240;
-        thumbs['thumb_m'] = 320;
-        thumbs['thumb_xl'] = 1280;
-    }
-    for(const thumbType in thumbs) {
-        const maxSize = thumbs[thumbType];
-        const scale = landscape ? `'-2:min(${maxSize},ih)'` : `'min(${maxSize},iw):-2'`;
-        let newPath = srcPath.replace(/\..+$/, '')+'-'+thumbType;
-        
-        if(thumbType != 'film_h264') {
-            newPath += '.jpg';
-            await executeCommand('ffmpeg', ['-v', 'error', '-y', '-i', srcPath, '-filter:v', 'thumbnail,scale='+scale, '-frames:v', '1', newPath]);
-        } else {
-            newPath += '.mp4';
-            if(process.env.USE_VAAPI == 'true') {
-                await executeCommand('ffmpeg', ['-v', 'error', '-y', '-hwaccel', 'vaapi', '-hwaccel_output_format', 'vaapi', '-i', srcPath, '-filter:v', 'scale_vaapi='+scale, '-c:v', 'h264_vaapi', '-preset', 'slow', newPath]);
-            } else {
-                await executeCommand('ffmpeg', ['-v', 'error', '-y', '-i', srcPath, '-filter:v', 'scale='+scale, '-c:v', 'h264', '-preset', 'slow', newPath]);
-            }
-        }
-        thumbs[thumbType] = newPath;
-    }
-    return thumbs;
-}
-
-async function processImage(srcPath) {
-    let thumbs = {
-        thumb_sm: 240,
-        thumb_m: 320,
-        thumb_xl: 1280
-    };
-
-    for(const thumbType in thumbs) {
-        const maxSize = thumbs[thumbType];
-        let newPath = srcPath.replace(/\..+$/, '')+'-'+thumbType+'.jpg';
-        await executeCommand('magick', ['convert', srcPath, '-resize', `${maxSize}x${maxSize}^>`, newPath]);
-        thumbs[thumbType] = newPath;
-    }
-    return thumbs;
-}
-
 async function cleanupFiles(filePaths) {
     for(const path of Object.values(filePaths)) {
         await fs.promises.unlink(path);
@@ -249,36 +177,49 @@ function readLine(prompt) {
 
 
 (async () => {
-    if(!fs.existsSync('tmp')) {
-        fs.mkdirSync('tmp');
-    }
+    fs.mkdirSync(tempRoot, { recursive: true });
+    const runDir = fs.mkdtempSync(path.join(tempRoot, 'run-'));
+    let succeeded = 0, failed = 0;
+    const started = Date.now();
 
     try {
+        const backend = selectBackend();
+        log(`Video backend: ${backend}`);
+        // Check dependencies before contacting Photos or marking any file broken.
+        await executeCommand('ffprobe', ['-version']);
+        await executeCommand('magick', ['-version']);
+        const encoders = await executeCommand('ffmpeg', ['-hide_banner', '-encoders']);
+        const encoder = { software: 'libx264', vaapi: 'h264_vaapi', videotoolbox: 'h264_videotoolbox' }[backend];
+        if(!encoders.includes(encoder)) throw new Error(`FFmpeg is missing ${encoder}`);
         for(const account of config.accounts) {
-            console.log(`Logging in as ${account.username} on ${account.url}`);
+            log(`Logging in as ${account.username} on ${account.url}`);
             let session = await login(account);
             if(session.requireOtp) {
+                if(!process.stdin.isTTY) throw new Error('2FA required: run npm start interactively first.');
                 account.otpCode = await readLine('Account requires 2FA, please enter OTP code: ');
                 session = await login(account);
                 delete account.otpCode;
+                if(session.requireOtp) throw new Error('OTP was rejected; run again with a fresh code.');
             }
             if(!account.deviceId) {
                 account.deviceId = session.did;
-                fs.writeFileSync('./config.json', JSON.stringify(config, null, 4));
+                fs.writeFileSync(configPath, JSON.stringify(config, null, 4), { mode: 0o600 });
             }
             
             checkLoop: while(true) {
-                console.log('Checking if conversion is needed');
+                log('Checking if conversion is needed');
                 const conversionNeeded = await checkConversionNeeded(session);
                 if(conversionNeeded.length == 0) {
-                    console.log('Finished, no files for conversion left');
+                    log('Finished, no files for conversion left');
                     break;
                 }
                 
                 for(const fileInfo of conversionNeeded) {
+                    const itemDir = fs.mkdtempSync(path.join(runDir, 'item-'));
+                    const itemStarted = Date.now();
                     try {
-                        console.log(`Converting file "${fileInfo.filename}" (${fileInfo.unit_id})`);
-                        const srcPath = 'tmp/'+fileInfo.filename;
+                        log(`Converting file "${fileInfo.filename}" (${fileInfo.unit_id})`);
+                        const srcPath = path.join(itemDir, path.basename(fileInfo.filename));
                         let filePaths = {};
                         
                         await downloadFile(session, fileInfo.unit_id, srcPath);
@@ -290,29 +231,36 @@ function readLine(prompt) {
                                 case 1:
                                     filePaths = await processVideo(srcPath, fileInfo.need_thumbnail, fileInfo.need_video);
                                     break;
+                                default:
+                                    throw new Error(`Unsupported media type: ${fileInfo.type}`);
                             }
                         } catch(err) {
-                            console.error('Marking file as broken:', err);
+                            failed++;
+                            process.exitCode = 1;
+                            console.error('Conversion failed:', err.message);
                             await setBroken(session, fileInfo.unit_id);
                             continue;
                         }
                         await uploadFiles(session, fileInfo.unit_id, filePaths);
+                        succeeded++;
+                        log(`Uploaded ${fileInfo.filename} in ${((Date.now() - itemStarted) / 1000).toFixed(1)}s`);
                         filePaths['src'] = srcPath;
                         await cleanupFiles(filePaths);
                     } catch(err) {
-                        console.error(err);
+                        process.exitCode = 1;
+                        console.error(err.message);
                         break checkLoop;
+                    } finally {
+                        fs.rmSync(itemDir, { recursive: true, force: true });
                     }
                 }
             }
         }
     } catch(err) {
-        console.error(err);
+        process.exitCode = 1;
+        console.error(err.message);
+    } finally {
+        fs.rmSync(runDir, { recursive: true, force: true });
+        log(`Run finished: uploaded=${succeeded}, conversion_failed=${failed}, elapsed=${((Date.now() - started) / 1000).toFixed(1)}s, exit=${process.exitCode || 0}`);
     }
-
-    // Clean up left temp files
-    const files = fs.readdirSync('tmp');
-    files.forEach(file => {
-        fs.unlinkSync('tmp/'+file);
-    });
 })();
