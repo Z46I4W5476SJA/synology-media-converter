@@ -3,12 +3,14 @@
         {
             "url": "http://192.168.1.10:5000",
             "username": "user1",
-            "password": "secret"
+            "password": "secret",
+            "space": "personal"
         },
         {
             "url": "http://diskstation2.local:5000",
             "username": "user2",
-            "password": "secret"
+            "password": "secret",
+            "space": "shared"
         }
     ]
 }

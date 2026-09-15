@@ -75,12 +75,18 @@ cp config.sample.json config.json
 chmod 600 config.json
 ```
 
+Set each account's `space` to `personal` (default, preserves upstream behavior)
+or `shared` (uses `SYNO.FotoTeam` for queue, download, upload and failure marking).
+For a service account processing only Shared Space, configure just one account
+with `"space": "shared"`. This does not grant access to anyone else's Personal Space.
+
 Edit `config.json` with your NAS URL and Photos account(s). Keep this file private;
 it is ignored by Git. Run interactively first so that any OTP can be entered and
 the device ID saved. The account needs access to the media in Photos.
 
 ```sh
-EXIT_ON_FAIL=true npm start
+LIST_ONLY=true npm start
+EXIT_ON_FAIL=true MAX_FILES=1 npm start
 ```
 
 Each native invocation processes the queue and exits. `SINGLE_RUN` and
@@ -96,6 +102,8 @@ No direct writes to `@eaDir` are performed.
 | `VIDEO_BACKEND` | `auto` | `auto`, `software`, `vaapi`, `videotoolbox`; auto selects VideoToolbox on macOS and software elsewhere |
 | `USE_VAAPI` | `false` | Legacy setting retained; used when `VIDEO_BACKEND` is unset |
 | `VIDEO_BITRATE` | `5M` | VideoToolbox target video bitrate (not a hard bandwidth cap) |
+| `LIST_ONLY` | `false` | Log the visible queue without downloading, converting, uploading or marking failures |
+| `MAX_FILES` | `0` | Stop after this many attempted conversions; 0 means unlimited |
 | `CONFIG_PATH` | Repository `config.json` | Absolute or working-directory-relative configuration path |
 | `TEMP_DIR` | Repository `tmp` | Temporary storage; allow space for an original plus generated files |
 | `EXIT_ON_FAIL` | `false` | Upstream behavior retained: false marks conversion failures broken; true exits the account queue without marking |

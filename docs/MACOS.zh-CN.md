@@ -28,11 +28,16 @@ cp config.sample.json config.json
 chmod 600 config.json
 ```
 
-编辑 `config.json`，填写 NAS URL 和专用账号。不要提交该文件。
+编辑 `config.json`，填写 NAS URL 和专用账号，并设 `"space": "shared"`。不要提交该文件。
+
+上游默认只查询个人空间的 `SYNO.Foto` 接口；共享空间必须改用 `SYNO.FotoTeam`。
+新增的 space 配置会同时切换队列、下载、上传和失败标记接口。缺省仍为 personal，
+保持其他用户已有配置的行为不变。
 首次手动运行：
 
 ```sh
-EXIT_ON_FAIL=true npm start
+LIST_ONLY=true npm start
+EXIT_ON_FAIL=true MAX_FILES=1 npm start
 ```
 
 需要 OTP 时在交互终端输入；设备 ID 会保存在同一配置文件中。
@@ -67,10 +72,12 @@ launchctl bootout gui/$(id -u) ~/Library/LaunchAgents/local.synology-media-conve
 
 目标机器：Mac mini，Apple Silicon，macOS 15.6.1。
 
-- 8 项自动测试通过：后端选择、旧版参数、模拟 Photos 上传与失败流程、临时文件清理。
+- 10 项自动测试通过（含个人/共享空间路由与只读队列）：后端选择、旧版参数、模拟 Photos 上传与失败流程、临时文件清理。
 - 合成 HEVC 横屏、竖屏、4K120：硬件转为 H.264 + AAC，短边 720，视频三档缩略图成功。
 - 合成 HEIC：三档 JPEG 缩略图成功。
 - `npm ci` 审计报告为 0 个已知漏洞。
 - 尚待验证：专用用户访问真实 NAS 队列、上传注册、手机速度优先播放、真实 VAAPI 硬件。
 
 这些合成素材测试不等于真实 DJI 素材或 Synology Photos 端到端验证。
+
+联调记录：专用账号登录成功，个人空间队列为空；初次访问共享空间的队列和浏览接口均返回 801。共享空间服务已启用，待确认该用户在 Photos 内的文件夹权限。尚未下载或修改真实媒体。

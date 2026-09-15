@@ -1,160 +1,13 @@
 const fs = require('fs');
 const readline = require('readline');
-const { Readable } = require('stream');
-const { finished } = require('stream/promises');
 const path = require('node:path');
 const { processVideo, processImage, executeCommand } = require('./lib/media');
 const { selectBackend } = require('./lib/video');
-const axios = require('axios');
+const { login, checkConversionNeeded, downloadFile, uploadFiles, setBroken } = require('./lib/photos');
 const configPath = path.resolve(process.env.CONFIG_PATH || path.join(__dirname, 'config.json'));
 const config = JSON.parse(fs.readFileSync(configPath, 'utf8'));
 const tempRoot = path.resolve(process.env.TEMP_DIR || path.join(__dirname, 'tmp'));
 const log = (...args) => console.log(new Date().toISOString(), ...args);
-
-async function login(account) {
-    const session = { url: account.url };
-    let res = await fetch(account.url+'/webapi/entry.cgi', {
-        method: 'POST',
-        headers: {
-            'Content-Type': 'application/x-www-form-urlencoded'
-        },
-        body: new URLSearchParams({
-            api: 'SYNO.API.Auth',
-            version: 7,
-            method: 'login',
-            enable_syno_token: 'yes',
-            enable_device_token: 'yes',
-            format: 'sid',
-            device_name: 'SynologyMediaConverter',
-            device_id: account.deviceId || '',
-            account: account.username,
-            passwd: account.password,
-            otp_code: account.otpCode || ''
-        })
-    });
-    res = await res.json();
-    if(!res.success) {
-        if(res.error.code == 403) {
-            session.requireOtp = true;
-            return session;
-        } else {
-            throw new Error('Authentication failed with error '+JSON.stringify(res.error));
-        }
-    }
-
-    session.did = res.data.device_id;
-    session.sid = res.data.sid;
-    session.synoToken = res.data.synotoken;
-    return session;
-}
-
-async function checkConversionNeeded(session) {
-    let res = await fetch(session.url+'/webapi/entry.cgi', {
-        method: 'POST',
-        headers: {
-            'Content-Type': 'application/x-www-form-urlencoded',
-            'X-Syno-Token': session.synoToken,
-            'Cookie': `did=${session.did}; id=${session.sid}`
-        },
-        body: new URLSearchParams({
-            api: 'SYNO.Foto.Upload.ConvertedFile',
-            version: 3,
-            method: 'list_convert_needed',
-            type: '["photo","video","live_video"]',
-            preset: 'windows'
-        })
-    });
-    res = await res.json();
-    if(!res.success) throw new Error('Requesting conversion needed failed with error '+JSON.stringify(res.error));
-    return res.data.list;
-}
-
-async function downloadFile(session, unitId, savePath) {
-    let res = await fetch(session.url+'/webapi/entry.cgi?'+new URLSearchParams({
-        api: 'SYNO.Foto.Download',
-        version: 1,
-        method: 'download',
-        unit_id: '['+unitId+']'
-    }), {
-        headers: {
-            'X-Syno-Token': session.synoToken,
-            'Cookie': `did=${session.did}; id=${session.sid}`
-        }
-    });
-    if(!res.ok) throw new Error(`Download failed: HTTP ${res.status}`);
-    if((res.headers.get('content-type') || '').includes('json')) {
-        res = await res.json();
-        throw new Error(`Download of file ${unitId} returned JSON instead of media`);
-    } else {
-        const fileStream = fs.createWriteStream(savePath, { flags: 'w' });
-        await finished(Readable.fromWeb(res.body).pipe(fileStream));
-    }
-}
-
-/*async function uploadFiles(session, unitId, filePaths) {
-    // Upload fails due to bug in Fetch API or built in FormData
-    const form = new FormData();
-    form.set('api', 'SYNO.Foto.Upload.ConvertedFile');
-    form.set('version', '3');
-    form.set('method', 'upload');
-    form.set('unit_id', unitId);
-    for(const name in filePaths) {
-        const path = filePaths[name];
-        form.set(name, fs.createReadStream(path));
-    }
-
-    let res = await fetch(session.url+'/webapi/entry.cgi', {
-        method: 'POST',
-        headers: {
-            'X-Syno-Token': session.synoToken,
-            'Cookie': `did=${session.did}; id=${session.sid}`
-        },
-        body: form
-    });
-    res = await res.json();
-    console.log(res)
-    if(!res.success) throw new Error(`Upload of file ${unitId} failed with error `+JSON.stringify(res.error));
-}*/
-async function uploadFiles(session, unitId, filePaths) {
-    const form = {
-        api: 'SYNO.Foto.Upload.ConvertedFile',
-        version: 3,
-        method: 'upload',
-        unit_id: unitId
-    };
-    for(const name in filePaths) {
-        const path = filePaths[name];
-        form[name] = fs.createReadStream(path);
-    }
-    const res = await axios.postForm(session.url+'/webapi/entry.cgi', form, {
-        headers: {
-            'X-Syno-Token': session.synoToken,
-            'Cookie': `did=${session.did}; id=${session.sid}`
-        }
-    });
-    if(!res.data.success) throw new Error(`Upload of file ${unitId} failed with error `+JSON.stringify(res.data.error));
-}
-
-async function setBroken(session, unitId) {
-    if(process.env.EXIT_ON_FAIL == 'true') {
-        throw new Error('Exit on broken file is enabled.');
-    }
-
-    let res = await fetch(session.url+'/webapi/entry.cgi?'+new URLSearchParams({
-        api: 'SYNO.Foto.Upload.ConvertedFile',
-        version: 3,
-        method: 'set_broken',
-        id: '['+unitId+']',
-        type: '["photo","video"]' // TODO: only set affacted types broken
-    }), {
-        headers: {
-            'X-Syno-Token': session.synoToken,
-            'Cookie': `did=${session.did}; id=${session.sid}`
-        }
-    });
-    res = await res.json();
-    if(!res.success) throw new Error(`Marking file ${unitId} as broken failed with error `+JSON.stringify(res.error));
-}
 
 async function cleanupFiles(filePaths) {
     for(const path of Object.values(filePaths)) {
@@ -183,16 +36,21 @@ function readLine(prompt) {
     const started = Date.now();
 
     try {
+        const listOnly = process.env.LIST_ONLY === 'true';
+        const maxFiles = Number(process.env.MAX_FILES || 0);
+        if (!Number.isInteger(maxFiles) || maxFiles < 0) throw new Error('MAX_FILES must be a nonnegative integer');
         const backend = selectBackend();
         log(`Video backend: ${backend}`);
         // Check dependencies before contacting Photos or marking any file broken.
-        await executeCommand('ffprobe', ['-version']);
-        await executeCommand('magick', ['-version']);
-        const encoders = await executeCommand('ffmpeg', ['-hide_banner', '-encoders']);
-        const encoder = { software: 'libx264', vaapi: 'h264_vaapi', videotoolbox: 'h264_videotoolbox' }[backend];
-        if(!encoders.includes(encoder)) throw new Error(`FFmpeg is missing ${encoder}`);
+        if (!listOnly) {
+            await executeCommand('ffprobe', ['-version']);
+            await executeCommand('magick', ['-version']);
+            const encoders = await executeCommand('ffmpeg', ['-hide_banner', '-encoders']);
+            const encoder = { software: 'libx264', vaapi: 'h264_vaapi', videotoolbox: 'h264_videotoolbox' }[backend];
+            if(!encoders.includes(encoder)) throw new Error(`FFmpeg is missing ${encoder}`);
+        }
         for(const account of config.accounts) {
-            log(`Logging in as ${account.username} on ${account.url}`);
+            log(`Logging in as ${account.username} on ${account.url}, space=${account.space || "personal"}`);
             let session = await login(account);
             if(session.requireOtp) {
                 if(!process.stdin.isTTY) throw new Error('2FA required: run npm start interactively first.');
@@ -209,12 +67,21 @@ function readLine(prompt) {
             checkLoop: while(true) {
                 log('Checking if conversion is needed');
                 const conversionNeeded = await checkConversionNeeded(session);
+                if (listOnly) {
+                    log(`Visible queue entries: ${conversionNeeded.length}`);
+                    for (const item of conversionNeeded) log(JSON.stringify(item));
+                    break;
+                }
                 if(conversionNeeded.length == 0) {
                     log('Finished, no files for conversion left');
                     break;
                 }
                 
                 for(const fileInfo of conversionNeeded) {
+                    if (maxFiles && succeeded + failed >= maxFiles) {
+                        log(`Reached MAX_FILES=${maxFiles}`);
+                        return;
+                    }
                     const itemDir = fs.mkdtempSync(path.join(runDir, 'item-'));
                     const itemStarted = Date.now();
                     try {
