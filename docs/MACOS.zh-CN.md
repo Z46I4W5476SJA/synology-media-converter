@@ -76,8 +76,25 @@ launchctl bootout gui/$(id -u) ~/Library/LaunchAgents/local.synology-media-conve
 - 合成 HEVC 横屏、竖屏、4K120：硬件转为 H.264 + AAC，短边 720，视频三档缩略图成功。
 - 合成 HEIC：三档 JPEG 缩略图成功。
 - `npm ci` 审计报告为 0 个已知漏洞。
-- 尚待验证：专用用户访问真实 NAS 队列、上传注册、手机速度优先播放、真实 VAAPI 硬件。
+- 专用账号已通过真实共享空间浏览、队列查询、原片下载和转换结果上传验证。
+- 两个原本 broken 的 HEVC 视频已补齐播放版，Photos 状态变为 ready。
+- 真实素材：187.3 MB → 7.58 MB，转码约 6.9 秒；27.0 MB → 2.02 MB，约 1.1 秒。
+- 尚待用户确认手机速度优先播放体验；真实 VAAPI 硬件未验证。
 
-这些合成素材测试不等于真实 DJI 素材或 Synology Photos 端到端验证。
+上述上传测试在 Mac mini 原生运行，全程使用 Photos API，无需 SMB。
 
-联调记录：专用账号登录成功，个人空间队列为空；初次访问共享空间的队列和浏览接口均返回 801。共享空间服务已启用，待确认该用户在 Photos 内的文件夹权限。尚未下载或修改真实媒体。
+## 队列为空不等于全部生成了压缩版
+
+`list_convert_needed` 不包含本次发现的历史 broken 视频。因此联调时另用
+`Browse.Item` 的 `video_convert` / `video_convert_status` 核对已有媒体。
+
+不能仅用 `video_codec=h264` 或 `video_convert_status=ready` 判断压缩版存在：
+
+- `quality=orig_h264` 表示原片已是 H.264，不是额外压缩版。
+- `quality=high` / `medium` 是不同播放档位；应按实际存在的 quality 验证 Streaming。
+- `quality=high` 返回 404 不代表没有 medium 版本。
+- 本次用 HTTP Range 请求读取 MP4 文件头和总长度，验证服务端确实能返回对应播放文件；这不替代全片播放检查。
+
+定时任务继续采用上游增量队列；不会每小时遍历整个媒体库，也不会自动重试历史 broken 项。
+本次对两个已确认缺少版本的失败项进行了单独补生成，未调用 set_broken，也未改动原片。
+原生 launchd 设置 EXIT_ON_FAIL=true，避免本程序将新的转换失败永久标记为 broken。
