@@ -115,7 +115,7 @@ function readLine(prompt) {
                         await cleanupFiles(filePaths);
                     } catch(err) {
                         process.exitCode = 1;
-                        console.error(err.message);
+                        console.error(err.message, err.cause?.code || '', err.cause?.message || '');
                         break checkLoop;
                     } finally {
                         fs.rmSync(itemDir, { recursive: true, force: true });
@@ -125,7 +125,7 @@ function readLine(prompt) {
         }
     } catch(err) {
         process.exitCode = 1;
-        console.error(err.message);
+        console.error(err.message, err.cause?.code || '', err.cause?.message || '');
     } finally {
         fs.rmSync(runDir, { recursive: true, force: true });
         log(`Run finished: uploaded=${succeeded}, conversion_failed=${failed}, elapsed=${((Date.now() - started) / 1000).toFixed(1)}s, exit=${process.exitCode || 0}`);

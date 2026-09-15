@@ -47,6 +47,8 @@ EXIT_ON_FAIL=true MAX_FILES=1 npm start
 
 ## 定时运行
 
+推荐将后台服务放在 `~/Library/Application Support/SynologyMediaConverter`，避免文稿/桌面目录的访问授权影响无人值守启动。
+
 确认真实 Photos 验证通过后，在最终安装目录生成 plist：
 
 ```sh
@@ -98,3 +100,5 @@ launchctl bootout gui/$(id -u) ~/Library/LaunchAgents/local.synology-media-conve
 定时任务继续采用上游增量队列；不会每小时遍历整个媒体库，也不会自动重试历史 broken 项。
 本次对两个已确认缺少版本的失败项进行了单独补生成，未调用 set_broken，也未改动原片。
 原生 launchd 设置 EXIT_ON_FAIL=true，避免本程序将新的转换失败永久标记为 broken。
+
+后台进程可能还需要在 macOS「隐私与安全性 → 本地网络」中允许 Node 访问 NAS。SSH 中运行成功不能替代 launchd 环境验证；以定时任务日志和 last exit code 为准。
